@@ -19,8 +19,45 @@
 #include "../scripting/include/compiler.h"
 
 #include <chrono>
-#include <stdlib.h>
+#include <cstdlib>
 #include <sstream>
+#include <unistd.h>
+#include <climits>
+
+// Resolve paths relative to the executable so the app works from any
+// working directory (build tree or `cmake --install` prefix). The project
+// root is the first ancestor that contains "assets/" plus the engine and
+// delta.conf files, so walk up the tree until that marker is found.
+#if !defined(_WIN32)
+namespace {
+
+    std::string findExecutableDirectory() {
+        char buffer[PATH_MAX];
+        ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+        if (len <= 0) return "";
+
+        buffer[len] = '\0';
+        std::string dir(buffer);
+        if (!dir.empty() && dir.back() == '/') dir.pop_back();
+
+        // Walk up until we find the directory that holds assets/ and the
+        // engines/ folder and delta.conf (the project root).
+        while (!dir.empty()) {
+            if (access((dir + "/assets").c_str(), X_OK) == 0) return dir;
+            if (access((dir + "/engines").c_str(), X_OK) == 0) return dir;
+            if (access((dir + "/delta.conf").c_str(), R_OK) == 0) return dir;
+
+            size_t pos = dir.find_last_of('/');
+            if (pos == std::string::npos || pos == 0) break;
+            dir = dir.substr(0, pos);
+        }
+
+        // Fall back to the directory containing the binary.
+        return dir;
+    }
+
+} // namespace
+#endif
 
 #if ATG_ENGINE_SIM_DISCORD_ENABLED
 #include "../discord/Discord.h"
@@ -94,18 +131,35 @@ void EngineSimApplication::initialize(void *instance, ysContextObject::DeviceAPI
     dbasic::Path modulePath = dbasic::GetModulePath();
     dbasic::Path confPath = modulePath.Append("delta.conf");
 
-    std::string enginePath = "../dependencies/submodules/delta-studio/engines/basic";
-    m_assetPath = "../assets";
+    // Assets resolve relative to the project root, not the current working
+    // directory, so the app runs from anywhere on Linux. projectRoot is the
+    // directory that holds both "assets/" and "dependencies/". The delta.conf
+    // file, when present, says exactly where the engine and assets live; the
+    // source found there is always joined to the project root first, so the
+    // window still opens correctly even if the project was moved or installed.
+    std::string enginePath = "dependencies/submodules/delta-studio/engines/basic";
+    std::string assetPath = "assets";
+    std::string exeDir = findExecutableDirectory();
+
     if (confPath.Exists()) {
         std::fstream confFile(confPath.ToString(), std::ios::in);
 
         std::getline(confFile, enginePath);
-        std::getline(confFile, m_assetPath);
-        enginePath = modulePath.Append(enginePath).ToString();
-        m_assetPath = modulePath.Append(m_assetPath).ToString();
+        std::getline(confFile, assetPath);
 
         confFile.close();
     }
+
+    if (!exeDir.empty()) {
+        enginePath = exeDir + "/dependencies/submodules/delta-studio/engines/basic";
+        assetPath = exeDir + "/assets";
+    } else {
+        enginePath = modulePath.Append(enginePath).ToString();
+        assetPath = modulePath.Append(assetPath).ToString();
+    }
+
+    m_assetPath = assetPath;
+    m_scriptPath = m_assetPath + "/main.mr";
 
     m_engine.GetConsole()->SetDefaultFontDirectory(enginePath + "/fonts/");
 
@@ -363,6 +417,21 @@ void EngineSimApplication::run() {
             }
         }
 
+        if (m_engine.ProcessKeyDown(ysKey::Code::I)) {
+            const std::string picked = pickEngineScript();
+            if (!picked.empty()) {
+                m_audioSource->SetMode(ysAudioSource::Mode::Stop);
+                loadScript(picked);
+                if (m_simulator->getEngine() != nullptr) {
+                    m_audioSource->SetMode(ysAudioSource::Mode::Loop);
+                    m_infoCluster->setLogMessage("Imported engine: " + picked);
+                }
+                else {
+                    m_infoCluster->setLogMessage("Import failed, see error_log.log");
+                }
+            }
+        }
+
         if (m_engine.ProcessKeyDown(ysKey::Code::Tab)) {
             m_screen++;
             if (m_screen > 2) m_screen = 0;
@@ -459,6 +528,14 @@ void EngineSimApplication::loadEngine(
     }
 
     if (m_iceEngine != nullptr) {
+        // Stop the old engine's audio from outliving it: the SDL callback
+        // still drains m_iceEngine->GetAudioDevice()->m_primarySource right
+        // after this, so detach it before the engine is destroyed.
+        if (m_audioSource != nullptr) {
+            m_audioSource->SetMode(ysAudioSource::Mode::Stop);
+            m_audioSource = nullptr;
+        }
+
         m_iceEngine->destroy();
         delete m_iceEngine;
     }
@@ -467,14 +544,15 @@ void EngineSimApplication::loadEngine(
     m_vehicle = vehicle;
     m_transmission = transmission;
 
-    m_simulator = engine->createSimulator(vehicle, transmission);
-
     if (engine == nullptr || vehicle == nullptr || transmission == nullptr) {
+        m_simulator = nullptr;
         m_iceEngine = nullptr;
         m_viewParameters.Layer1 = 0;
 
         return;
     }
+
+    m_simulator = engine->createSimulator(vehicle, transmission);
 
     createObjects(engine);
 
@@ -617,15 +695,48 @@ const SimulationObject::ViewParameters &
     return m_viewParameters;
 }
 
-void EngineSimApplication::loadScript() {
+// Opens a native file picker (zenity) and returns the chosen .mr path, or an
+// empty string when cancelled or unavailable.
+std::string EngineSimApplication::pickEngineScript() {
+    FILE *pipe = popen(
+        "zenity --file-selection --title='Import engine script' "
+        "--file-filter='Engine scripts | *.mr' 2>/dev/null", "r");
+    if (pipe == nullptr) return "";
+
+    char buffer[PATH_MAX] = {0};
+    std::string picked;
+    if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        picked = buffer;
+        while (!picked.empty() && (picked.back() == '\n' || picked.back() == '\r')) {
+            picked.pop_back();
+        }
+    }
+
+    pclose(pipe);
+    return picked;
+}
+
+void EngineSimApplication::loadScript(const std::string &scriptPath) {
+    // An empty path means "reload whatever script is current" (the last
+    // imported script, or the default main.mr at startup).
+    const std::string resolvedPath = scriptPath.empty()
+        ? (m_scriptPath.empty() ? m_assetPath + "/main.mr" : m_scriptPath)
+        : scriptPath;
+
     Engine *engine = nullptr;
     Vehicle *vehicle = nullptr;
     Transmission *transmission = nullptr;
 
+    m_scriptPath = resolvedPath;
+
 #ifdef ATG_ENGINE_SIM_PIRANHA_ENABLED
     es_script::Compiler compiler;
     compiler.initialize();
-    const bool compiled = compiler.compile("../assets/main.mr");
+
+    compiler.addSearchPath(m_assetPath);
+    compiler.addSearchPath(m_assetPath + "/engines");
+
+    const bool compiled = compiler.compile(resolvedPath.c_str());
     if (compiled) {
         const es_script::Compiler::Output output = compiler.execute();
         configure(output.applicationSettings);
@@ -639,9 +750,6 @@ void EngineSimApplication::loadScript() {
         vehicle = nullptr;
         transmission = nullptr;
     }
-
-    compiler.destroy();
-#endif /* ATG_ENGINE_SIM_PIRANHA_ENABLED */
 
     if (vehicle == nullptr) {
         Vehicle::Parameters vehParams;
@@ -666,6 +774,13 @@ void EngineSimApplication::loadScript() {
     }
 
     loadEngine(engine, vehicle, transmission);
+
+    // loadEngine now owns engine/vehicle/transmission. Clear the compiler's
+    // static output so the next compile cannot reuse these freed pointers.
+    compiler.resetOutput();
+    compiler.destroy();
+#endif /* ATG_ENGINE_SIM_PIRANHA_ENABLED */
+
     refreshUserInterface();
 }
 

@@ -63,6 +63,12 @@ class EngineSimApplication {
         void destroyObjects();
         dbasic::DeltaEngine *getEngine() { return &m_engine; }
 
+        // Loads an engine script and rebuilds the simulation. The script may be
+        // an absolute path or one relative to the assets directory; an imported
+        // engine lives in $XDG_DATA_HOME/engine-sim/engines/ and can be picked
+        // with the Import Engine key.
+        std::string pickEngineScript();
+
         float pixelsToUnits(float pixels) const;
         float unitsToPixels(float units) const;
 
@@ -89,7 +95,7 @@ class EngineSimApplication {
         ApplicationSettings* getAppSettings() { return &m_applicationSettings; }
 
     protected:
-        void loadScript();
+        void loadScript(const std::string &scriptPath = "");
         void processEngineInput();
         void renderScene();
 
@@ -117,6 +123,8 @@ class EngineSimApplication {
         ApplicationSettings m_applicationSettings;
         dbasic::ShaderSet m_shaderSet;
         Shaders m_shaders;
+
+        std::string m_scriptPath;
 
         dbasic::DeltaEngine m_engine;
         dbasic::AssetManager m_assetManager;

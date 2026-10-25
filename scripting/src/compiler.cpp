@@ -18,6 +18,17 @@ es_script::Compiler::Output *es_script::Compiler::output() {
     return s_output;
 }
 
+void es_script::Compiler::resetOutput() {
+    // The output holds raw pointers to objects the application takes
+    // ownership of (engine, vehicle, ...). Without a reset, a second
+    // compile hands the application a stale pointer to an already-deleted
+    // engine — the use-after-free on engine import.
+    if (s_output != nullptr) {
+        delete s_output;
+        s_output = nullptr;
+    }
+}
+
 void es_script::Compiler::initialize() {
     m_compiler = new piranha::Compiler(&m_rules);
     m_compiler->setFileExtension(".mr");
@@ -27,6 +38,10 @@ void es_script::Compiler::initialize() {
     m_compiler->addSearchPath("es/");
 
     m_rules.initialize();
+}
+
+void es_script::Compiler::addSearchPath(const std::string &path) {
+    m_compiler->addSearchPath(piranha::Path(path));
 }
 
 bool es_script::Compiler::compile(const piranha::IrPath &path) {

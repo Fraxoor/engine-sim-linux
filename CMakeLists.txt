@@ -24,6 +24,12 @@ project(engine-sim)
 
 set(CMAKE_CXX_STANDARD 17)
 
+# SDL2 is the window/input/graphics/audio backend for the Linux port. The
+# app target needs the include directories directly (not only through the
+# delta-core link interface), so it looks them up at the top level.
+find_package(SDL2 REQUIRED)
+find_package(SDL2_image REQUIRED)
+
 # ========================================================
 # GTEST
 
@@ -31,7 +37,7 @@ include(FetchContent)
 FetchContent_Declare(
     googletest
     URL
-    https://github.com/google/googletest/archive/609281088cfefc76f9d0ce82e1ff6c30cc3591e5.zip
+    https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
 )
 
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
@@ -274,7 +280,11 @@ add_executable(engine-sim-app
     include/info_cluster.h
 )
 
+# engine-sim-script-interpreter is listed first so that its references to
+# engine-sim's simulation types (DirectThrottleLinkage, Governor, ...) resolve
+# on the static link line.
 target_link_libraries(engine-sim-app
+    engine-sim-script-interpreter
     engine-sim
 )
 
@@ -282,11 +292,6 @@ if (DTV)
     target_link_libraries(engine-sim-app
         direct-to-video)
 endif (DTV)
-
-if (PIRANHA_ENABLED)
-    target_link_libraries(engine-sim-app
-        engine-sim-script-interpreter)
-endif (PIRANHA_ENABLED)
 
 if (DISCORD_ENABLED)
     add_library(discord-rpc STATIC IMPORTED)
@@ -298,7 +303,8 @@ endif (DISCORD_ENABLED)
 
 target_include_directories(engine-sim-app
     PUBLIC dependencies/submodules
-    PUBLIC dependencies/submodules/delta-studio/include)
+    PUBLIC dependencies/submodules/delta-studio/include
+    PRIVATE ${SDL2_INCLUDE_DIRS} ${SDL2_IMAGE_INCLUDE_DIRS})
 
 add_subdirectory(dependencies)
 
@@ -320,3 +326,55 @@ target_link_libraries(engine-sim-test
 
 include(GoogleTest)
 gtest_discover_tests(engine-sim-test)
+
+# Headless regression check for the engine-import/reload path. Reuses the app
+# sources (minus main.cpp) so it tests the same EngineSimApplication code.
+if (PIRANHA_ENABLED)
+    set(ENGINE_SIM_APP_SOURCES
+        src/engine_sim_application.cpp
+        src/geometry_generator.cpp
+        src/simulation_object.cpp
+        src/piston_object.cpp
+        src/connecting_rod_object.cpp
+        src/ui_element.cpp
+        src/ui_manager.cpp
+        src/cylinder_pressure_gauge.cpp
+        src/ui_math.cpp
+        src/gauge.cpp
+        src/crankshaft_object.cpp
+        src/cylinder_bank_object.cpp
+        src/cylinder_head_object.cpp
+        src/ui_button.cpp
+        src/ui_utilities.cpp
+        src/combustion_chamber_object.cpp
+        src/oscilloscope.cpp
+        src/shaders.cpp
+        src/engine_view.cpp
+        src/right_gauge_cluster.cpp
+        src/cylinder_temperature_gauge.cpp
+        src/labeled_gauge.cpp
+        src/throttle_display.cpp
+        src/afr_cluster.cpp
+        src/fuel_cluster.cpp
+        src/oscilloscope_cluster.cpp
+        src/performance_cluster.cpp
+        src/firing_order_display.cpp
+        src/load_simulation_cluster.cpp
+        src/mixer_cluster.cpp
+        src/info_cluster.cpp
+    )
+    add_executable(engine-reload-check
+        tools/engine_reload_check.cpp
+        ${ENGINE_SIM_APP_SOURCES})
+    target_include_directories(engine-reload-check
+        PUBLIC dependencies/submodules
+        PUBLIC dependencies/submodules/delta-studio/include
+        PRIVATE ${SDL2_INCLUDE_DIRS} ${SDL2_IMAGE_INCLUDE_DIRS})
+    target_link_libraries(engine-reload-check
+        engine-sim-script-interpreter
+        engine-sim
+        delta-basic)
+    add_test(NAME engine-reload-check COMMAND engine-reload-check
+        ${PROJECT_SOURCE_DIR}/assets/engines/atg-video-2/01_subaru_ej25_eh.mr
+        ${PROJECT_SOURCE_DIR}/assets/engines/atg-video-2/03_2jz.mr)
+endif (PIRANHA_ENABLED)

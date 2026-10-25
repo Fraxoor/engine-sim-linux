@@ -32,7 +32,14 @@ namespace es_script {
         static Output *output();
 
         void initialize();
+        // Adds a directory searched for `import` statements that are not
+        // resolvable relative to the script's own folder.
+        void addSearchPath(const std::string &path);
         bool compile(const piranha::IrPath &path);
+
+        // Clears the static output so a later compile does not hand a stale
+        // pointer to a previously compiled engine.
+        void resetOutput();
         Output execute();
         void destroy();
 
