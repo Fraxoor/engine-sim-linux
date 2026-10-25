@@ -14,6 +14,8 @@
 #include "../include/feedback_comb_filter.h"
 #include "../include/utilities.h"
 
+#include "yds_windows_audio_wave_file.h"
+
 #include "../scripting/include/compiler.h"
 
 #include <chrono>

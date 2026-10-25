@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.10)
 
 option(DTV "Enable video output" OFF)
 option(PIRANHA_ENABLED "Enable scripting input" ON)
-option(DISCORD_ENABLED "Enable Discord Rich Presence" ON)
+option(DISCORD_ENABLED "Enable Discord Rich Presence" OFF)
 
 if (DTV)
     add_compile_definitions(ATG_ENGINE_SIM_VIDEO_CAPTURE)
@@ -203,7 +203,7 @@ if (DISCORD_ENABLED)
     )
 endif (DISCORD_ENABLED)
 
-add_executable(engine-sim-app WIN32
+add_executable(engine-sim-app
     # Source files
     src/main.cpp
     src/engine_sim_application.cpp
@@ -297,7 +297,8 @@ if (DISCORD_ENABLED)
 endif (DISCORD_ENABLED)
 
 target_include_directories(engine-sim-app
-    PUBLIC dependencies/submodules)
+    PUBLIC dependencies/submodules
+    PUBLIC dependencies/submodules/delta-studio/include)
 
 add_subdirectory(dependencies)
 

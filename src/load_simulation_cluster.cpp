@@ -3,6 +3,7 @@
 #include "../include/engine_sim_application.h"
 #include "../include/ui_utilities.h"
 
+#include <climits>
 #include <sstream>
 #include <iomanip>
 
